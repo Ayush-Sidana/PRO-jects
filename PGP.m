@@ -1,0 +1,494 @@
+% Parameters for the image processing step
+tau_hard = 0.1;               % Distance threshold τhard
+lambda_hard_sigma = 0.1;      % Threshold λhardσ (for σ ≤ 40, use λhardσ = 0)
+sigma_squared = 40^2;         % Variance of the zero-mean Gaussian noise
+nhard = 8;                    % Size of the 3D block for collaborative filtering
+khards = 5;                   % Size of the reference block P (khards x khards)
+kwien = 8;
+Nhard = 4;                    % Number of similar patches to keep . (Nhard is always chosen as a power of 2)
+Nwien = 4;
+tau_wien = 0.2;
+sigma = 40;
+
+% Image processing for each frame in keyFramesCell
+processedKeyFramesCell = cell(size(keyFramesCell));
+for i = 1:numel(keyFramesCell)
+    frame = keyFramesCell{i};
+    processedFrame = processFrame(frame, nhard, tau_hard, lambda_hard_sigma, sigma_squared, khards, Nhard);
+    processedKeyFramesCell{i} = processedFrame;
+end
+
+% Image processing function using the described steps
+function processedFrame = processFrame(frame, nhard, tau_hard, lambda_hard_sigma, sigma_squared, khards, Nhard)
+    % Convert RGB frame to YUV space
+    yuvFrame = rgb2ycbcr(frame);
+    
+    % Get the Y channel (luminance)
+    Y = double(yuvFrame(:, :, 1));
+    
+    % First Denoising Step  to the Y channel
+     processedY = processBlock(Y, nhard, tau_hard, lambda_hard_sigma, sigma_squared, khards, Nhard);
+
+    % Second Denoising Step to the processedY.
+     processedFrame = Second_Denoising_Step(processedY,Y, tau_wien, lambda_hard_sigma,nhard, khards, Nwien,Nhard);
+
+end
+
+% Function of First Denoising Step  on Y channel with patch search
+function processedY = processBlock(Y, nhard, tau_hard, lambda_hard_sigma, ~, khards, Nhard)
+    % Define the hard thresholding operator gamma_prime based on
+    % lambda_hard_sigma
+    gamma_prime = @(x) (abs(x) >= lambda_hard_sigma) .* x;
+    
+    % Pad the Y channel to handle boundary cases
+    paddedY = padarray(Y, [khards/2, khards/2], 'symmetric', 'both');
+    
+    % Initialize the processed Y channel
+    processedY = zeros(size(Y, 1), size(Y, 2), Nhard);
+    
+    % Get the size of the Y channel
+    [height, width] = size(paddedY);
+    
+    % Loop over the pixels in the Y channel
+    for y = 1:height-khards+1     
+        for x = 1:width-khards+1
+            % Extract the reference block P
+            blockP = paddedY(y:y+khards-1, x:x+khards-1);
+            
+            % Calculate the normalized quadratic distance between P and each patch Q in the neighborhood
+            distances = zeros(nhard, nhard);
+            for dy = 0:nhard-1
+                for dx = 0:nhard-1
+                    blockQ = paddedY(y+dy:y+dy+nhard-1, x+dx:x+dx+nhard-1);
+                    distances(dy+1, dx+1) = sqrt(sum(sum((gamma_prime(blockP) - gamma_prime(blockQ)).^2)) /(khards^2)) ;  
+                end 
+            end
+            
+            % Convert 2D distances to a vector for sorting
+            distanceVector = distances(:);
+            
+            % Find the set of similar patches to P based on the distance threshold tau_hard
+            similarPatchesIndices = find(distanceVector <= tau_hard);
+            
+            % Sort the patches in P(P) according to their distance to P
+            [~, sortedIndices] = sort(distanceVector(similarPatchesIndices));
+            sortedSimilarPatchesIndices = similarPatchesIndices(sortedIndices);
+            
+            % Keep the first Nhard patches in P(P) .  
+            NhardIndices = sortedSimilarPatchesIndices(1:Nhard); 
+            
+            % Store the sorted similar patches indices in the processed Y channel
+            processedY(y, x, :) = NhardIndices;
+         end
+    end
+            
+
+     
+    % Apply 3D isometric linear transform and shrinkage
+    for y = 1:height - khards + 1
+        for x = 1:width - khards + 1
+            % Extract the indices of similar patches
+            similarIndices = processedY(y, x, :);
+    
+            % Extract the similar patches
+            similarPatches = paddedY(y:y + khards - 1, x:x + khards - 1, similarIndices);
+    
+            % Apply 3D transform and shrinkage
+            [processedPatches, transformed_signal_shrunk] = Collaborative_Filtering(similarPatches, sigma_squared);
+    
+            % After Collaborative Filtering
+            
+            % Initialize buffers
+            numeratorBuffer = zeros(size(processedPatches));
+            denominatorBuffer = zeros(size(processedPatches));
+    
+            % Iterate through each pixel in the processedPatches region
+            for py = 1:khards
+                for px = 1:khards
+                    % Extract the indices of similar patches for the current pixel
+                    similarIndices = processedY(y + py - 1, x + px - 1, :);
+    
+                    % Extract the similar patches for the current pixel
+                    %similarPatches = paddedY(y + py - 1:y + py + khards - 2, x + px - 1:x + px + khards - 2, similarIndices);
+    
+                    % Iterate through each similar patch
+                    for idx = 1:length(similarIndices)
+                        % Extract the current similar patch
+                        currentPatch_2 = processedPatches(:, :, idx); % This should be u_Q,P_hard(x)
+
+                         % Apply Kaiser window
+                        kaiserWindow = kaiser(khards, 6.28); % You can adjust the beta parameter as needed
+                        currentPatch = currentPatch_2 .* kaiserWindow;
+    
+                        % Calculate the number of retained coefficients N_P_hard
+                        N_P_hard = sum(abs(transformed_signal_shrunk(:)) > 0);
+    
+                        % Calculate the weight w_P_hard
+                        if N_P_hard >= 1
+                            w_P_hard = 1 / N_P_hard;
+                        else
+                            w_P_hard = 1;
+                        end
+    
+                        % Extract the indicator function χ_Q(x) for the current pixel
+                        indicator = abs(currentPatch) > 0;  % χ_Q(x) for current Q
+    
+                        % Update numerator and denominator buffers using indicator function
+                        numeratorBuffer(:, :, idx) = numeratorBuffer(:, :, idx) + w_P_hard * currentPatch .* indicator;
+                        denominatorBuffer(:, :, idx) = denominatorBuffer(:, :, idx) + w_P_hard * indicator;
+                    end
+                end
+            end
+    
+            % Calculate the final basic estimate u_basic(x)
+            u_basic = zeros(size(processedPatches(:, :, 1)));
+            for idx = 1:length(similarIndices)
+                % Calculate u_basic for each pixel x
+                u_basic = numeratorBuffer(:, :, idx) ./ denominatorBuffer(:, :, idx);
+            end
+    
+            % Update the processedY region with the final basic estimate
+            processedY(y:y + khards - 1, x:x + khards - 1, similarIndices) = u_basic;
+    
+        end
+    end
+end
+
+ 
+       
+
+
+
+
+
+function [processedPatches, transformed_signal_shrunk] = Collaborative_Filtering(patches, ~)
+    [patch_size, ~, num_patches] = size(patches);
+    
+    % Apply 2D Bior1.5 transform on each patch
+    transformed_patches = zeros(patch_size, patch_size, num_patches);
+    for idx = 1:num_patches
+        patch = patches(:, :, idx);
+        
+        % Apply 2D Bior1.5 transform (Forward Transform)
+        transformed_patch = apply2DBior15Transform(patch);
+        
+        transformed_patches(:, :, idx) = transformed_patch;
+    end
+    
+    % Apply 1D Walsh-Hadamard transform along the third dimension
+    transformed_patches_walsh = zeros(patch_size, patch_size, num_patches);
+    for row = 1:patch_size
+        for col = 1:patch_size
+            % Extract the 1D signal along the third dimension
+            signal = squeeze(transformed_patches(row, col, :));  %(???? make it clear once)
+            
+            % Apply 1D Walsh-Hadamard transform
+            transformed_signal = apply1DWalshTransform(signal);
+            
+            % Store the transformed signal
+            transformed_patches_walsh(row, col, :) = transformed_signal;
+        end
+    end
+    
+    % Apply shrinkage to the transform spectrum 
+    for idx = 1:num_patches
+        transformed_signal = transformed_patches_walsh(:, :, idx);
+        
+        % Apply hard thresholding shrinkage
+        transformed_signal_shrunk = gamma(transformed_signal, lambda_3Dhard_sigma);
+        
+        transformed_patches_walsh(:, :, idx) = transformed_signal_shrunk;
+    end
+    
+    % Apply inverse 1D Walsh-Hadamard transform
+    transformed_patches_inv = zeros(patch_size, patch_size, num_patches);
+    for row = 1:patch_size
+        for col = 1:patch_size
+            % Extract the transformed signal along the third dimension
+            transformed_signal = squeeze(transformed_patches_walsh(row, col, :));
+            
+            % Apply inverse 1D Walsh-Hadamard transform
+            inv_transformed_signal = applyInverse1DWalshTransform(transformed_signal);
+            
+            % Store the inverse transformed signal
+            transformed_patches_inv(row, col, :) = inv_transformed_signal;
+        end
+    end
+    
+    % Apply inverse 2D Bior1.5 transform on each patch
+    processedPatches = zeros(patch_size, patch_size, num_patches);
+    for idx = 1:num_patches
+        transformed_patch_inv = transformed_patches_inv(:, :, idx);
+        
+        % Apply inverse 2D Bior1.5 transform
+        processed_patch = applyInverse2DBior15Transform(transformed_patch_inv);
+        
+        processedPatches(:, :, idx) = processed_patch;
+    end
+end
+%__
+function transformed_patch = apply2DBior15Transform(patch)
+    % Apply 2D Bior1.5 transform using built-in MATLAB functions
+    [loD, hiD, ~, ~] = biorwavf('bior1.5');
+    transformed_patch = wavedec2(patch, 1, loD, hiD);
+end
+function transformed_signal = apply1DWalshTransform(signal)
+    % Apply 1D Walsh-Hadamard transform using built-in MATLAB function
+    transformed_signal = fwht(signal);
+end
+
+function inv_transformed_signal = applyInverse1DWalshTransform(transformed_signal)
+    % Apply inverse 1D Walsh-Hadamard transform using built-in MATLAB function
+    inv_transformed_signal = ifwht(transformed_signal);
+end
+
+function processed_patch = applyInverse2DBior15Transform(transformed_patch_inv)
+    % Apply inverse 2D Bior1.5 transform using built-in MATLAB functions
+    [~, ~, loR, hiR] = biorwavf('bior1.5');
+    processed_patch = waverec2(transformed_patch_inv, loR, hiR);
+end
+
+function output = gamma(x, threshold)
+    output = (abs(x) > threshold) .* x;
+end
+%__
+
+
+%STEP_2
+
+%__
+
+
+function processedY_basic = Second_Denoising_Step(processedY,Y, tau_wien, lambda_hard_sigma,nhard, khards, Nwien,Nhard)
+    [height, width, ~] = size(processedY);
+    % Define the hard thresholding operator gamma_prime based on
+    % lambda_hard_sigma
+    gamma_prime = @(x) (abs(x) >= lambda_hard_sigma) .* x;
+    
+    % Pad the processedY channel to handle boundary cases
+    padded_processedY = padarray(processedY, [khards/2, khards/2], 'symmetric', 'both');
+    
+    % Initialize the processed Y basic channel
+    processedY_basic = zeros(size(processedY, 1), size(processedY, 2), Nwien);
+    
+    % Get the size of the Y channel
+    %[height, width] = size(paddedY);
+    
+    % Loop over the pixels in the Y channel
+    for y = 1:height-khards+1     
+        for x = 1:width-khards+1
+            % Extract the reference block P
+            blockP = padded_processedY(y:y+khards-1, x:x+khards-1);
+            
+            % Calculate the normalized quadratic distance between P and each patch Q in the neighborhood
+            distances = zeros(nhard, nhard);
+            for dy = 0:nhard-1
+                for dx = 0:nhard-1
+                    blockQ = padded_processedY(y+dy:y+dy+nhard-1, x+dx:x+dx+nhard-1);
+                    distances(dy+1, dx+1) = sqrt(sum(sum((gamma_prime(blockP) - gamma_prime(blockQ)).^2)) /(khards^2)) ;  
+                end 
+            end
+            
+            % Convert 2D distances to a vector for sorting
+            distanceVector = distances(:);
+            
+            % Find the set of similar patches to P based on the distance threshold tau_hard
+            similarPatchesIndices = find(distanceVector <= tau_wien);
+            
+            % Sort the patches in P(P) according to their distance to P
+            [~, sortedIndices] = sort(distanceVector(similarPatchesIndices));
+            sortedSimilarPatchesIndices = similarPatchesIndices(sortedIndices);
+            
+            % Keep the first Nwien patches in P(P) .  
+            NwienIndices = sortedSimilarPatchesIndices(1:Nwien); 
+            
+            % Store the sorted similar patches indices in the processed Y channel
+            processedY_basic(y, x, :) = NwienIndices;
+
+        end
+    end
+
+            %___Calculation_Of_P(P)_____%
+
+    % Pad the Y channel to handle boundary cases
+    paddedY = padarray(Y, [khards/2, khards/2], 'symmetric', 'both');
+    
+    % Initialize the processed Y channel
+    processed_Y = zeros(size(Y, 1), size(Y, 2), Nhard);
+    
+    % Get the size of the Y channel
+    [height, width] = size(paddedY);
+    
+    % Loop over the pixels in the Y channel
+    for j = 1:height-khards+1     
+        for i = 1:width-khards+1
+            % Extract the reference block P
+            blockP = paddedY(j:j+khards-1, i:i+khards-1);
+            
+            % Calculate the normalized quadratic distance between P and each patch Q in the neighborhood
+            distances = zeros(nhard, nhard);
+            for dj = 0:nhard-1
+                for di = 0:nhard-1
+                    blockQ = paddedY(j+dj:j+dj+nhard-1, i+di:i+di+nhard-1);
+                    distances(dj+1, di+1) = sqrt(sum(sum((gamma_prime(blockP) - gamma_prime(blockQ)).^2)) /(khards^2)) ;  
+                end 
+            end
+            
+            % Convert 2D distances to a vector for sorting
+            distanceVector = distances(:);
+            
+            % Find the set of similar patches to P based on the distance threshold tau_hard
+            similarPatchesIndices = find(distanceVector <= tau_hard);
+            
+            % Sort the patches in P(P) according to their distance to P
+            [~, sortedIndices] = sort(distanceVector(similarPatchesIndices));
+            sortedSimilarPatchesIndices = similarPatchesIndices(sortedIndices);
+            
+            % Keep the first Nhard patches in P(P) .  
+            Nwien_Indices = sortedSimilarPatchesIndices(1:Nwien); 
+            
+            % Store the sorted similar patches indices in the processed Y channel
+            processed_Y(j, i, :) = Nwien_Indices;
+         end
+    end
+      
+    [height, width, ~] = size(processedY_baic);
+   
+     % Apply Colaaborative_Filtering_2
+    for y = 1:height - khards + 1
+        for x = 1:width - khards + 1
+            % Extract the indices of similar patches
+            similarIndices_Pbasic = processedY_basic(y, x, :);
+            similarIndices_P_P = processed_Y(y, x, :);
+    
+            % Extract the similar patches
+            similarPatches_Pbasic= padded_processedY(y:y + khards - 1, x:x + khards - 1, similarIndices_Pbasic(P));
+            similarPatches_P_P = paddedY(y:y + khards - 1, x:x + khards - 1, similarIndices_P_P);
+    
+            % Apply 3D transform and shrinkage
+            [processedPatches_2,wiener_coeff] = Collaborative_Filtering_2(similarPatches_Pbasic,similarPatches_P_P, sigma);
+
+               % After Collaborative Filtering
+            
+            % Initialize buffers
+            numeratorBuffer = zeros(size(processedPatches_2));
+            denominatorBuffer = zeros(size(processedPatches_2));
+    
+            % Iterate through each pixel in the processedPatches_2 region
+            for py = 1:kwien
+                for px = 1:kwien
+                    % Extract the indices of similar patches for the current pixel
+                    similarIndices = processedY_basic(y + py - 1, x + px - 1, :);
+    
+                    % Extract the similar patches for the current pixel
+                    %similarPatches = padded_processedY(y + py - 1:y + py + khards - 2, x + px - 1:x + px + khards - 2, similarIndices);
+
+    
+                    % Iterate through each similar patch
+                    for idx = 1:length(similarIndices)
+                        % Extract the current similar patch
+                        currentPatch_1 = processedPatches_2(:, :, idx); % This should be u_Q,P_wien(x)
+
+                         % Apply Kaiser window
+                        kaiserWindow = kaiser(kwien, 6.28); % You can adjust the beta parameter as needed
+                        currentPatch = currentPatch_1 .* kaiserWindow;
+    
+                       
+                        w_P_wien =  1 ./ (norm(wiener_coeff)^2);
+
+                        
+    
+                        % Extract the indicator function χ_Q(x) for the current pixel
+                        indicator = abs(currentPatch) > 0;  % χ_Q(x) for current Q
+    
+                        % Update numerator and denominator buffers using indicator function
+                        numeratorBuffer(:, :, idx) = numeratorBuffer(:, :, idx) + w_P_wien * currentPatch .* indicator;
+                        denominatorBuffer(:, :, idx) = denominatorBuffer(:, :, idx) + w_P_wien * indicator;
+                    end
+                end
+            end
+    
+            % Calculate the final basic estimate u_basic(x)
+            u_final = zeros(size(processedPatches_2(:, :, 1)));
+            for idx = 1:length(similarIndices)
+                % Calculate u_basic for each pixel x
+                u_final = numeratorBuffer(:, :, idx) ./ denominatorBuffer(:, :, idx);
+            end
+    
+            % Update the processedY region with the final basic estimate
+            processedY(y:y + khards - 1, x:x + khards - 1, similarIndices) = u_final;
+    
+        end
+    end
+end
+
+             
+     
+
+
+%___Collaborative_Filtering_Step_2___%
+
+
+function [processedPatches_2,wiener_coeff] = Collaborative_Filtering_2(similarPatches_Pbasic,similarPatches_P_P, sigma)
+    
+
+
+    
+    [~, ~, num_patches1] = size(similarPatches_Pbasic);
+    [~, ~, num_patches2] = size(similarPatches_P_P);
+    
+    % Initialize denoised patches
+    processedPatches_2 = zeros(size(similarPatches_Pbasic));
+    
+    % Loop over each 3D patch Pbasic(P)
+    for patch_idx_1 = 1:num_patches1
+        noisy_patch1 = similarPatches_Pbasic(:,:, patch_idx_1);
+        
+        % Apply 2D DCT transform
+        transformed_patch1 = dct2(noisy_patch1);
+        
+        % Apply 1D Walsh-Hadamard transform
+        transformed_patch1 = apply1DWalshTransform(transformed_patch1);
+        
+        % Compute Wiener coefficients
+        wiener_coeff = abs(transformed_patch1).^2 ./ (abs(transformed_patch1).^2 + sigma^2);
+        
+        
+    
+
+
+
+        % Loop over each 3D patch P(P)
+        for patch_idx_2 = 1:num_patches2
+            noisy_patch2 = similarPatches_P_P(:,:,patch_idx_2);
+            
+            % Apply 2D DCT transform
+            transformed_patch2 = dct2(noisy_patch2);
+            
+            % Apply 1D Walsh-Hadamard transform
+            transformed_patch2 = apply1DWalshTransform(transformed_patch2);
+            
+           
+            
+            % Wiener collaborative filtering
+            denoised_patch = wiener_coeff .* transformed_patch2;
+            
+            % Apply inverse 1D Walsh-Hadamard transform
+            denoised_patch = applyInverse1DWalshTransform(denoised_patch);
+            
+            % Apply inverse 2D DCT transform
+            denoised_patch = idct2(denoised_patch);
+            
+            processedPatches_2(:, patch_idx_2) = denoised_patch(:);
+        end
+    end
+end
+
+
+
+
+
+
+
+
+
