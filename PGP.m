@@ -4,10 +4,10 @@ lambda_hard_sigma = 0.1;      % Threshold λhardσ (for σ ≤ 40, use λhardσ 
 sigma_squared = 40^2;         % Variance of the zero-mean Gaussian noise
 nhard = 8;                    % Size of the 3D block for collaborative filtering
 khards = 5;                   % Size of the reference block P (khards x khards)
-kwien = 8;
+kwien = 8;                    % Size of the reference block P (kwien x kwien)
 Nhard = 4;                    % Number of similar patches to keep . (Nhard is always chosen as a power of 2)
-Nwien = 4;
-tau_wien = 0.2;
+Nwien = 4;                    % Number of similar patches to keep 
+tau_wien = 0.2;               % Distance threshold τwien
 sigma = 40;
 
 % Image processing for each frame in keyFramesCell
@@ -84,7 +84,7 @@ function processedY = processBlock(Y, nhard, tau_hard, lambda_hard_sigma, ~, kha
             
 
      
-    % Apply 3D isometric linear transform and shrinkage
+    % Apply Collaborative Filtering and Aggregation.
     for y = 1:height - khards + 1
         for x = 1:width - khards + 1
             % Extract the indices of similar patches
@@ -93,10 +93,10 @@ function processedY = processBlock(Y, nhard, tau_hard, lambda_hard_sigma, ~, kha
             % Extract the similar patches
             similarPatches = paddedY(y:y + khards - 1, x:x + khards - 1, similarIndices);
     
-            % Apply 3D transform and shrinkage
+            % Apply Collaborative Filtering
             [processedPatches, transformed_signal_shrunk] = Collaborative_Filtering(similarPatches, sigma_squared);
     
-            % After Collaborative Filtering
+            % After Collaborative Filtering Aggregation is to be done.
             
             % Initialize buffers
             numeratorBuffer = zeros(size(processedPatches));
@@ -180,8 +180,7 @@ function [processedPatches, transformed_signal_shrunk] = Collaborative_Filtering
     for row = 1:patch_size
         for col = 1:patch_size
             % Extract the 1D signal along the third dimension
-            signal = squeeze(transformed_patches(row, col, :));  %(???? make it clear once)
-            
+            signal = squeeze(transformed_patches(row, col, :));              
             % Apply 1D Walsh-Hadamard transform
             transformed_signal = apply1DWalshTransform(signal);
             
@@ -195,7 +194,7 @@ function [processedPatches, transformed_signal_shrunk] = Collaborative_Filtering
         transformed_signal = transformed_patches_walsh(:, :, idx);
         
         % Apply hard thresholding shrinkage
-        transformed_signal_shrunk = gamma(transformed_signal, lambda_3Dhard_sigma);
+        transformed_signal_shrunk = gamma(transformed_signal, lambda_hard_sigma);
         
         transformed_patches_walsh(:, :, idx) = transformed_signal_shrunk;
     end
@@ -260,6 +259,7 @@ end
 
 
 function processedY_basic = Second_Denoising_Step(processedY,Y, tau_wien, lambda_hard_sigma,nhard, khards, Nwien,Nhard)
+    % Get the size of the processedY channel
     [height, width, ~] = size(processedY);
     % Define the hard thresholding operator gamma_prime based on
     % lambda_hard_sigma
@@ -434,55 +434,128 @@ function [processedPatches_2,wiener_coeff] = Collaborative_Filtering_2(similarPa
 
 
     
-    [~, ~, num_patches1] = size(similarPatches_Pbasic);
-    [~, ~, num_patches2] = size(similarPatches_P_P);
+    [patch_size_1, ~, num_patches1] = size(similarPatches_Pbasic);
+    [patch_size_2, ~, num_patches2] = size(similarPatches_P_P);
     
     % Initialize denoised patches
     processedPatches_2 = zeros(size(similarPatches_Pbasic));
     
     % Loop over each 3D patch Pbasic(P)
-    for patch_idx_1 = 1:num_patches1
-        noisy_patch1 = similarPatches_Pbasic(:,:, patch_idx_1);
+
+    transformed_patches = zeros(patch_size_1, patch_size_1, num_patches1);
+    for idx = 1:num_patches1
+        patch = similarPatches_Pbasic(:, :, idx);
         
         % Apply 2D DCT transform
-        transformed_patch1 = dct2(noisy_patch1);
+        transformed_patch = dct2(patch);
         
-        % Apply 1D Walsh-Hadamard transform
-        transformed_patch1 = apply1DWalshTransform(transformed_patch1);
-        
-        % Compute Wiener coefficients
-        wiener_coeff = abs(transformed_patch1).^2 ./ (abs(transformed_patch1).^2 + sigma^2);
-        
-        
-    
-
-
-
-        % Loop over each 3D patch P(P)
-        for patch_idx_2 = 1:num_patches2
-            noisy_patch2 = similarPatches_P_P(:,:,patch_idx_2);
-            
-            % Apply 2D DCT transform
-            transformed_patch2 = dct2(noisy_patch2);
-            
+        transformed_patches(:, :, idx) = transformed_patch;
+    end
+   % Apply 1D Walsh-Hadamard transform
+   transformed_patch1 = zeros(patch_size_1, patch_size_1, num_patches1);
+    for row = 1:patch_size_1
+        for col = 1:patch_size_1
+            % Extract the 1D signal along the third dimension
+            signal = squeeze(transformed_patches(row, col, :));              
             % Apply 1D Walsh-Hadamard transform
-            transformed_patch2 = apply1DWalshTransform(transformed_patch2);
+            transformed_signal = apply1DWalshTransform(signal);
             
-           
-            
-            % Wiener collaborative filtering
-            denoised_patch = wiener_coeff .* transformed_patch2;
-            
-            % Apply inverse 1D Walsh-Hadamard transform
-            denoised_patch = applyInverse1DWalshTransform(denoised_patch);
-            
-            % Apply inverse 2D DCT transform
-            denoised_patch = idct2(denoised_patch);
-            
-            processedPatches_2(:, patch_idx_2) = denoised_patch(:);
+            % Store the transformed signal
+            transformed_patch1(row, col, :) = transformed_signal;
         end
     end
+
+   % Compute Wiener coefficients
+   wiener_coeff_patches = zeroes(patch_size_1, patch_size_1, num_patches1);
+   % Loop over each denoised patch for computing Wiener coefficients
+    for idx = 1:num_patches1
+        % Extract the corresponding transformed signals
+        transformed_patch1_current = transformed_patch1(:, :, idx);
+        
+        % Compute Wiener coefficients
+        wiener_coeff = abs(transformed_patch1_current).^2 ./ (abs(transformed_patch1_current).^2 + sigma^2);
+        
+        % Store Wiener coefficients for the current patch
+        wiener_coeff_patches(:, :, idx) = wiener_coeff;
+    end
+        
+   % Loop over each 3D patch P(P)
+
+
+    transformed_patches = zeros(patch_size_2, patch_size_2, num_patches2);
+    for idx = 1:num_patches2
+        patch = similarPatches_Pbasic(:, :, idx);
+        
+        % Apply 2D DCT transform
+        transformed_patch = dct2(patch);
+        
+        transformed_patches(:, :, idx) = transformed_patch;
+    end
+   % Apply 1D Walsh-Hadamard transform
+   transformed_patch2 = zeros(patch_size_2, patch_size_2, num_patches2);
+    for row = 1:patch_size_2
+        for col = 1:patch_size_2
+            % Extract the 1D signal along the third dimension
+            signal = squeeze(transformed_patches(row, col, :));              
+            % Apply 1D Walsh-Hadamard transform
+            transformed_signal = apply1DWalshTransform(signal);
+            
+            % Store the transformed signal
+            transformed_patch2(row, col, :) = transformed_signal;
+        end
+    end
+
+
+
+   % Wiener collaborative filtering
+
+   % Loop over each denoised patch for Wiener collaborative filtering
+for idx = 1:num_patches2
+    % Extract the corresponding transformed signals
+    transformed_patch2_current = transformed_patch2(:, :, idx);
+    
+    % Extract Wiener coefficients for the current patch
+    wiener_coeff = wiener_coeff_patches(:, :, idx);
+    
+    % Wiener collaborative filtering
+    denoised_patch = wiener_coeff .* transformed_patch2_current;
+
+    % Apply inverse 1D Walsh-Hadamard transform
+
+   transformed_patches_inv = zeros(patch_size_2, patch_size_2, num_patches2);
+    for row = 1:patch_size_2
+        for col = 1:patch_size_2
+            % Extract the transformed signal along the third dimension
+            transformed_signal = squeeze(denoised_patch(row, col, :));
+            
+            % Apply inverse 1D Walsh-Hadamard transform
+            inv_transformed_signal = applyInverse1DWalshTransform(transformed_signal);
+            
+            % Store the inverse transformed signal
+            transformed_patches_inv(row, col, :) = inv_transformed_signal;
+        end
+    end
+            
+   % Apply inverse 2D DCT transform
+   for idx1 = 1:num_patches2
+        transformed_patch_inv = transformed_patches_inv(:, :, idx1);
+        
+        % Apply inverse 2D DCT transform
+        processed_patch = idct2(transformed_patch_inv);
+        
+        processedPatches_2(:, :, idx1) = processed_patch;
+   end
+    
+    
 end
+   
+end
+            
+   
+
+            
+
+
 
 
 
