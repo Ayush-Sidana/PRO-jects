@@ -81,9 +81,7 @@ function processedY = processBlock(Y, nhard, tau_hard, lambda_hard_sigma, ~, kha
             processedY(y, x, :) = NhardIndices;
          end
     end
-            
-
-     
+ 
     % Apply Collaborative Filtering and Aggregation.
     for y = 1:height - khards + 1
         for x = 1:width - khards + 1
@@ -153,13 +151,6 @@ function processedY = processBlock(Y, nhard, tau_hard, lambda_hard_sigma, ~, kha
         end
     end
 end
-
- 
-       
-
-
-
-
 
 function [processedPatches, transformed_signal_shrunk] = Collaborative_Filtering(patches, ~)
     [patch_size, ~, num_patches] = size(patches);
@@ -252,11 +243,9 @@ function output = gamma(x, threshold)
 end
 %__
 
-
 %STEP_2
 
 %__
-
 
 function processedY_basic = Second_Denoising_Step(processedY,Y, tau_wien, lambda_hard_sigma,nhard, khards, Nwien,Nhard)
     % Get the size of the processedY channel
@@ -422,18 +411,12 @@ function processedY_basic = Second_Denoising_Step(processedY,Y, tau_wien, lambda
     end
 end
 
-             
-     
-
-
 %___Collaborative_Filtering_Step_2___%
 
 
 function [processedPatches_2,wiener_coeff] = Collaborative_Filtering_2(similarPatches_Pbasic,similarPatches_P_P, sigma)
     
 
-
-    
     [patch_size_1, ~, num_patches1] = size(similarPatches_Pbasic);
     [patch_size_2, ~, num_patches2] = size(similarPatches_P_P);
     
@@ -505,9 +488,7 @@ function [processedPatches_2,wiener_coeff] = Collaborative_Filtering_2(similarPa
         end
     end
 
-
-
-   % Wiener collaborative filtering
+ % Wiener collaborative filtering
 
    % Loop over each denoised patch for Wiener collaborative filtering
 for idx = 1:num_patches2
@@ -545,10 +526,7 @@ for idx = 1:num_patches2
         
         processedPatches_2(:, :, idx1) = processed_patch;
    end
-    
-    
 end
-   
 end
             
    
