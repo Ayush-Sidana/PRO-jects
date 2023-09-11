@@ -1,7 +1,6 @@
 
 LCUSize = 64; % Size of Large Coding Units (LCUs)
-CUSizes = [32, 16, 8]; % Sizes of Coding Units (CUs) for quadtree partitioning
-searchRange = 16; % Search range for motion estimation
+CUSizes = [32, 16, 8,4]; % Sizes of Coding Units (CUs) for quadtree partitioning
 currentCUSizeIdx = 1; % Initialize the current CU size index
 blockPosition = [x, y]; % Define your block position here
 
@@ -12,7 +11,7 @@ blockPosition = [x, y]; % Define your block position here
        currentCUSizeIdx = 1; % Reset to the first CU size
    end
 
-SI=generateSIForFrames(processedKeyFramesCell, nonKeyFramesVector, LCUSize, CUSizes, searchRange);
+SI=generateSIForFrames(processedKeyFramesCell, nonKeyFramesVector, LCUSize, CUSizes);
 
 
 function SIFrame = generateSIForFrames(processedKeyFramesCell, nonKeyFramesVector, LCUSize, CUSizes, searchRange)
@@ -24,12 +23,12 @@ function SIFrame = generateSIForFrames(processedKeyFramesCell, nonKeyFramesVecto
         currentFrame = nonKeyFramesVector{frameIdx};
         referenceFrames = processedKeyFramesCell{frameIdx};
         % Generate SI frame using recursive motion estimation
-        SIFrame = recursiveMotionEstimation(referenceFrames, currentFrame, LCUSize, CUSizes, searchRange, SIFrame);
+        SIFrame = recursiveMotionEstimation(referenceFrames, currentFrame, LCUSize, CUSizes, SIFrame);
          
     end
 end
 
-function SIFrame = recursiveMotionEstimation(referenceFrames, currentFrame, LCUSize, CUSizes, searchRange, SIFrame)
+function SIFrame = recursiveMotionEstimation(referenceFrames, currentFrame, LCUSize, CUSizes, SIFrame)
     % Divide the current frame into LCU blocks
     LCUBlocks = divideFrameIntoLCUBlocks(currentFrame, LCUSize);
 
@@ -42,7 +41,7 @@ function SIFrame = recursiveMotionEstimation(referenceFrames, currentFrame, LCUS
         %estimatedMV = motionEstimation(LCU, referenceFrames, searchRange);
 
         % Determine whether the LCU block should be divided into smaller blocks
-        shouldDivide = shouldDivideLCUBlock(LCU, searchRange);
+        [shouldDivide,bestMVs] = shouldDivideLCUBlock(LCU,referenceFrames,blockPosition, CUSizes);
 
         if shouldDivide
             % Initialize the current CU size
@@ -61,7 +60,7 @@ function SIFrame = recursiveMotionEstimation(referenceFrames, currentFrame, LCUS
                     SIFrame(LCUBlocks{i, 1}:LCUBlocks{i, 2}, LCUBlocks{i, 3}:LCUBlocks{i, 4}) = subCompensatedLCU;
 
                     % Update the shouldDivide condition
-                    shouldDivide = shouldDivideLCUBlock(subLCU, subMV, searchRange);
+                    shouldDivide = shouldDivideLCUBlock(subLCU,referenceFrames,blockPosition, CUSizes);
                 end
 
                 % Move to the next CU size
@@ -79,10 +78,8 @@ end
 
 
 
-function [shouldDivide,bestSATD,bestMV] = shouldDivideLCUBlock(LCU,referenceFrames,blockPosition, CUSizes)
-    bestMV = [0, 0];
+function [shouldDivide,bestMVs] = shouldDivideLCUBlock(LCU,referenceFrames,blockPosition, CUSizes)
     bestSATD = inf;
-
     searchRange = ((CUSizes) / 2) - 1;
 
     for y = -searchRange:(searchRange+2)
@@ -100,20 +97,20 @@ function [shouldDivide,bestSATD,bestMV] = shouldDivideLCUBlock(LCU,referenceFram
 
                 if SATD < bestSATD
                     bestSATD = SATD;   %LCU_SATD
-                    bestMV = [x, y];
+                    
                 end
             end
         end
     end
 
     % Check for quadtree partitioning
-    if shouldDivideLCUBlock(LCU, bestMV, CUSizes)
+    if shouldDivideLCUBlock(LCU,referenceFrames,blockPosition, CUSizes)
         % Divide LCU into CUs
         CUBlocks = divideLCUBlock(LCU, CUSizes);
 
         % Initialize best motion vectors and SATD
         bestMVs = cell(size(CUBlocks));
-        bestSATDs = zeros(size(CUBlocks));
+        bestSATDs = inf(size(CUBlocks));
 
         % Loop through CUs
         for cuIdx = 1:numel(CUBlocks)
@@ -190,10 +187,9 @@ function CUBlocks = divideLCUBlock(LCU, CUSizes)
     % Calculate the number of CU blocks in the LCU
     numCUsH = size(LCU, 1) / CUSizes;
     numCUsW = size(LCU, 2) / CUSizes;
-    numCUs = numCUsH * numCUsW;
-
+    
     % Initialize the CU blocks cell array
-    CUBlocks = cell(numCUs);     % cell to be size of numCUs only according to me.
+    CUBlocks = cell(numCUsH, numCUsW);     % cell to be size of numCUs only according to me.
 
     % Loop through the CU blocks
     
@@ -214,15 +210,15 @@ function CUBlocks = divideLCUBlock(LCU, CUSizes)
     end
 end
 
-function estimatedMV = motionEstimation(LCU, referenceFrames, searchRange)
+%function estimatedMV = motionEstimation(LCU, referenceFrames, searchRange)
     % Perform motion estimation and return the estimated motion vector
     % (This part is specific to your motion estimation algorithm)
     % You need to implement the motion estimation logic here.
     % estimatedMV should be a 2-element vector [dx, dy].
     
     % For now, let's assume estimatedMV is [0, 0] (no motion).
-    estimatedMV = [0, 0];
-end
+%    estimatedMV = [0, 0];
+%end
 
 function compensatedLCU = performMotionCompensation(LCU, motionVector)
     % Perform motion compensation and return the compensated LCU
