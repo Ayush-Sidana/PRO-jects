@@ -14,7 +14,7 @@ blockPosition = [x, y]; % Define your block position here
 SI=generateSIForFrames(processedKeyFramesCell, nonKeyFramesVector, LCUSize, CUSizes);
 
 
-function SIFrame = generateSIForFrames(processedKeyFramesCell, nonKeyFramesVector, LCUSize, CUSizes, searchRange)
+function SIFrame = generateSIForFrames(processedKeyFramesCell, nonKeyFramesVector, LCUSize, CUSizes)
     % Initialize the SI frame
     SIFrame = zeros(size(nonKeyFramesVector{1})); % Assuming all frames have the same size
 
@@ -41,7 +41,7 @@ function SIFrame = recursiveMotionEstimation(referenceFrames, currentFrame, LCUS
         %estimatedMV = motionEstimation(LCU, referenceFrames, searchRange);
 
         % Determine whether the LCU block should be divided into smaller blocks
-        [shouldDivide,bestMVs] = shouldDivideLCUBlock(LCU,referenceFrames,blockPosition, CUSizes);
+        shouldDivide = shouldDivideLCUBlock(LCU,referenceFrames,blockPosition, CUSizes);
 
         if shouldDivide
             % Initialize the current CU size
@@ -55,9 +55,10 @@ function SIFrame = recursiveMotionEstimation(referenceFrames, currentFrame, LCUS
                 % Recurse on the smaller blocks
                 for j = 1:numel(CUBlocks)
                     subLCU = CUBlocks{j};
-                    subMV = motionEstimation(subLCU, referenceFrames, searchRange);
-                    subCompensatedLCU = performMotionCompensation(subLCU, subMV);
-                    SIFrame(LCUBlocks{i, 1}:LCUBlocks{i, 2}, LCUBlocks{i, 3}:LCUBlocks{i, 4}) = subCompensatedLCU;
+                    
+                    [estimatedMV_forward, estimatedMV_backward] = motionEstimation(subLCU,referenceFrames);
+                    combineCompensated=combineCompensatedLCUs(subLCU, estimatedMV_forward, estimatedMV_backward);
+                    SIFrame(i,j) = combineCompensated;
 
                     % Update the shouldDivide condition
                     shouldDivide = shouldDivideLCUBlock(subLCU,referenceFrames,blockPosition, CUSizes);
@@ -68,17 +69,18 @@ function SIFrame = recursiveMotionEstimation(referenceFrames, currentFrame, LCUS
             end
         else
             % Compensate the LCU block using the motion vector
-            compensatedLCU = performMotionCompensation(LCU, estimatedMV);
+           [estimatedMV_forward, estimatedMV_backward] = motionEstimation(LCU,referenceFrames);
+           combineCompensated=combineCompensatedLCUs(LCU, estimatedMV_forward, estimatedMV_backward);
 
             % Add the compensated LCU block to the SI frame
-            SIFrame(LCUBlocks{i, 1}:LCUBlocks{i, 2}, LCUBlocks{i, 3}:LCUBlocks{i, 4}) = compensatedLCU;
+            SIFrame(i) = combineCompensated;
         end
     end
 end
 
 
 
-function [shouldDivide,bestMVs] = shouldDivideLCUBlock(LCU,referenceFrames,blockPosition, CUSizes)
+function shouldDivide = shouldDivideLCUBlock(LCU,referenceFrames,blockPosition, CUSizes)
     bestSATD = inf;
     searchRange = ((CUSizes) / 2) - 1;
 
@@ -97,6 +99,7 @@ function [shouldDivide,bestMVs] = shouldDivideLCUBlock(LCU,referenceFrames,block
 
                 if SATD < bestSATD
                     bestSATD = SATD;   %LCU_SATD
+                    %bestMVs_1 = [x, y];
                     
                 end
             end
@@ -109,7 +112,7 @@ function [shouldDivide,bestMVs] = shouldDivideLCUBlock(LCU,referenceFrames,block
         CUBlocks = divideLCUBlock(LCU, CUSizes);
 
         % Initialize best motion vectors and SATD
-        bestMVs = cell(size(CUBlocks));
+        bestMVs_2 = cell(size(CUBlocks));
         bestSATDs = inf(size(CUBlocks));
 
         % Loop through CUs
@@ -131,7 +134,7 @@ function [shouldDivide,bestMVs] = shouldDivideLCUBlock(LCU,referenceFrames,block
         
                         if SATD < bestSATDs{cuIdx}
                             bestSATDs{cuIdx} = SATD;   %LCU_SATD
-                            bestMVs{cuIdx} = [x, y];
+                            bestMVs_2{cuIdx} = [x, y];
                         end
                     end
                 end
@@ -210,27 +213,96 @@ function CUBlocks = divideLCUBlock(LCU, CUSizes)
     end
 end
 
-%function estimatedMV = motionEstimation(LCU, referenceFrames, searchRange)
-    % Perform motion estimation and return the estimated motion vector
-    % (This part is specific to your motion estimation algorithm)
-    % You need to implement the motion estimation logic here.
-    % estimatedMV should be a 2-element vector [dx, dy].
-    
-    % For now, let's assume estimatedMV is [0, 0] (no motion).
-%    estimatedMV = [0, 0];
-%end
 
-function compensatedLCU = performMotionCompensation(LCU, motionVector)
+function SATD = calculateSATD(LCU, refBlock)
+    Q_ij = double(LCU) - double(refBlock);
+    H = hadamard(size(Q_ij,1));
+    S_ij = H * Q_ij * H';
+    SATD = sum(abs(S_ij(:)));
+end
+
+function [estimatedMV_forward, estimatedMV_backward] = motionEstimation(LCU, referenceFrames)
+    % Initialize variables
+    estimatedMV_forward = [0, 0];
+    estimatedMV_backward = [0, 0];
+    bestSATD_forward = inf;
+    bestSATD_backward = inf;
+    searchRange = ((LCU) / 2) - 1;
+
+    % Loop through the search range
+    for y = -searchRange : (searchRange + 2)
+        for x = -searchRange : (searchRange + 2)
+            % Calculate reference block positions for forward motion estimation
+            refY_forward = blockPosition(2) + y;
+            refX_forward = blockPosition(1) + x;
+
+            % Calculate reference block positions for backward motion estimation
+            refY_backward = blockPosition(2) - y;
+            refX_backward = blockPosition(1) - x;
+
+            if refY_forward > 0 && refY_forward <= size(referenceFrames{1}, 1) - size(LCU, 1) + 1 && ...
+                    refX_forward > 0 && refX_forward <= size(referenceFrames{1}, 2) - size(LCU, 2) + 1
+                % Forward motion estimation
+                refBlock_forward = referenceFrames{frameIdx}(refY_forward : refY_forward + size(LCU, 1) - 1, ...
+                                                              refX_forward : refX_forward + size(LCU, 2) - 1);
+                SATD_forward = calculateSATD(LCU, refBlock_forward);
+
+                if SATD_forward < bestSATD_forward
+                    bestSATD_forward = SATD_forward;
+                    estimatedMV_forward = [x, y];
+                end
+            end
+
+            if refY_backward > 0 && refY_backward <= size(referenceFrames{1}, 1) - size(LCU, 1) + 1 && ...
+                    refX_backward > 0 && refX_backward <= size(referenceFrames{1}, 2) - size(LCU, 2) + 1
+                % Backward motion estimation
+                refBlock_backward = referenceFrames{frameIdx}(refY_backward : refY_backward + size(LCU, 1) - 1, ...
+                                                              refX_backward : refX_backward + size(LCU, 2) - 1);
+                SATD_backward = calculateSATD(LCU, refBlock_backward);
+
+                if SATD_backward < bestSATD_backward
+                    bestSATD_backward = SATD_backward;
+                    estimatedMV_backward = [-x, -y]; % Negative values for backward motion
+                end
+            end
+        end
+    end
+end
+
+function compensatedLCU = combineCompensatedLCUs(LCU, estimatedMV_forward, estimatedMV_backward)
+    % Combine the compensated LCUs using motion vectors from forward and backward motion estimation
+    [h, w] = size(LCU);
+    compensatedLCU = zeros(h,w);
+    
+
+    % Apply forward motion vector
+    compensatedLCU_forward = applyMotionVector(LCU, estimatedMV_forward);
+
+    % Apply backward motion vector
+    compensatedLCU_backward = applyMotionVector(LCU, estimatedMV_backward);
+    for y = 1:h
+            for x = 1:w
+                % Combine the two compensated LCUs, e.g., by averaging
+                compensatedLCU(y,x) = ((compensatedLCU_forward(y,x) + compensatedLCU_backward(y,x))) / 2;
+    
+                
+             end
+            
+     end
+    
+end
+
+function compensatedLCU = applyMotionVector(LCU, motionVector)
     % Perform motion compensation and return the compensated LCU
     [h, w] = size(LCU);
     compensatedLCU = zeros(h, w);
-    
+
     % Apply motion vector to each pixel in the LCU
     for y = 1:h
         for x = 1:w
             refY = y + motionVector(2);
             refX = x + motionVector(1);
-            
+
             % Check if the reference coordinates are within bounds
             if refY >= 1 && refY <= h && refX >= 1 && refX <= w
                 compensatedLCU(y, x) = LCU(refY, refX);
@@ -239,9 +311,6 @@ function compensatedLCU = performMotionCompensation(LCU, motionVector)
     end
 end
 
-function SATD = calculateSATD(LCU, refBlock)
-    Q_ij = double(LCU) - double(refBlock);
-    H = hadamard(size(Q_ij,1));
-    S_ij = H * Q_ij * H';
-    SATD = sum(abs(S_ij(:)));
-end
+
+
+
