@@ -1,13 +1,13 @@
 % Parameters for the image processing step
-tau_hard = 0.1;               % Distance threshold τhard
-lambda_hard_sigma = 0.1;      % Threshold λhardσ (for σ ≤ 40, use λhardσ = 0)
+tau_hard = 2500;               % Distance threshold τhard
+lambda_hard_sigma = 108;      % Threshold λhardσ (for σ ≤ 40, use λhardσ = 0)
 sigma_squared = 40^2;         % Variance of the zero-mean Gaussian noise
-nhard = 8;                    % Size of the 3D block for collaborative filtering
-khards = 5;                   % Size of the reference block P (khards x khards)
+nhard = 39;                    % Size of the 3D block for collaborative filtering
+khards = 8;                   % Size of the reference block P (khards x khards)
 kwien = 8;                    % Size of the reference block P (kwien x kwien)
-Nhard = 4;                    % Number of similar patches to keep . (Nhard is always chosen as a power of 2)
-Nwien = 4;                    % Number of similar patches to keep 
-tau_wien = 0.2;               % Distance threshold τwien
+Nhard = 16;                    % Number of similar patches to keep . (Nhard is always chosen as a power of 2)
+Nwien = 32;                    % Number of similar patches to keep 
+tau_wien = 2500;               % Distance threshold τwien
 sigma = 40;
 
 % Image processing for each frame in keyFramesCell
