@@ -1,10 +1,10 @@
 % Parameters for the image processing step
 tau_hard = 2500;               % Distance threshold τhard
-lambda_hard_sigma = 108;      % Threshold λhardσ (for σ ≤ 40, use λhardσ = 0)
-sigma_squared = 40^2;         % Variance of the zero-mean Gaussian noise
+lambda_hard_sigma = 108;       % Threshold λhardσ (for σ ≤ 40, use λhardσ = 0)
+sigma_squared = 40^2;          % Variance of the zero-mean Gaussian noise
 nhard = 39;                    % Size of the 3D block for collaborative filtering
-khards = 8;                   % Size of the reference block P (khards x khards)
-kwien = 8;                    % Size of the reference block P (kwien x kwien)
+khards = 8;                    % Size of the reference block P (khards x khards)
+kwien = khards;                % Size of the reference block P (kwien x kwien)
 Nhard = 16;                    % Number of similar patches to keep . (Nhard is always chosen as a power of 2)
 Nwien = 32;                    % Number of similar patches to keep 
 tau_wien = 2500;               % Distance threshold τwien
@@ -48,51 +48,58 @@ function processedY = processBlock(Y, nhard, tau_hard, lambda_hard_sigma, ~, kha
     
     % Get the size of the Y channel
     [height, width] = size(paddedY);
+
+    % Calculate the number of blocks of nhard*nhard size in the padded Y channel
+    nyards = floor(height / nhard);
+    nxards = floor(width / nhard);
+
+    offset= (khards)/2;
     
-    % Loop over the pixels in the Y channel
-    for y = 1:height-khards+1     
-        for x = 1:width-khards+1
-            % Extract the reference block P
-            blockP = paddedY(y:y+khards-1, x:x+khards-1);
-            
-            % Calculate the normalized quadratic distance between P and each patch Q in the neighborhood
+    % Loop over the padded Y channel in blocks of nhard*nhard size
+    for y = 1:nyards
+        for x = 1:nxards
+            % Extract the search window
+            searchWindow = paddedY((y - 1) * nhard + 1:(y - 1) * nhard + nhard, (x - 1) * nhard + 1:(x - 1) * nhard + nhard);
+
+            % Extract the reference block P from the center of the search window, with some offset
+            blockP = searchWindow((nhard - 1)/2 + 1 - offset:(nhard - 1)/2 + khards - offset, (nhard - 1)/2 + 1 - offset:(nhard - 1)/2 + khards - offset);
+
+            % Calculate the normalized quadratic distance between P and each patch Q in the search window
             distances = zeros(nhard, nhard);
-            for dy = 0:nhard-1
-                for dx = 0:nhard-1
-                    blockQ = paddedY(y+dy:y+dy+nhard-1, x+dx:x+dx+nhard-1);
-                    distances(dy+1, dx+1) = sqrt(sum(sum((gamma_prime(blockP) - gamma_prime(blockQ)).^2)) /(khards^2)) ;  
-                end 
+            for dy = 0:nhard - 1
+                for dx = 0:nhard - 1
+                    blockQ = searchWindow(dy:(dy + khards - 1), dx:(dx + khards - 1));
+                    distances(dy + 1, dx + 1) = sqrt(sum(sum((gamma_prime(blockP) - gamma_prime(blockQ)).^2)) / (khards^2));
+                end
             end
             
-            % Convert 2D distances to a vector for sorting
+            % Convert the 2D distances array to a 1D vector
             distanceVector = distances(:);
-            
+
             % Find the set of similar patches to P based on the distance threshold tau_hard
             similarPatchesIndices = find(distanceVector <= tau_hard);
-            
+
             % Sort the patches in P(P) according to their distance to P
             [~, sortedIndices] = sort(distanceVector(similarPatchesIndices));
             sortedSimilarPatchesIndices = similarPatchesIndices(sortedIndices);
-            
-            % Keep the first Nhard patches in P(P) .  
-            NhardIndices = sortedSimilarPatchesIndices(1:Nhard); 
-            
-            % Store the sorted similar patches indices in the processed Y channel
-            processedY(y, x, :) = NhardIndices;
+
+            % Keep the first Nhard patches in P(P).  
+            NhardIndices = sortedSimilarPatchesIndices(0:(Nhard-1));
+
+            % Extract the '3Dgroup' named set with Nhard number of patches with that indices with 'distanceVector <= tau_hard'
+            similarPatches = searchWindow(NhardIndices, :);
+
+            % Store the '3Dgroup' named set in the processed Y channel
+            processedY(y, x, :) = similarPatches;
          end
     end
  
     % Apply Collaborative Filtering and Aggregation.
-    for y = 1:height - khards + 1
-        for x = 1:width - khards + 1
-            % Extract the indices of similar patches
-            similarIndices = processedY(y, x, :);
-    
-            % Extract the similar patches
-            similarPatches = paddedY(y:y + khards - 1, x:x + khards - 1, similarIndices);
-    
+    for y = 1:nyards
+        for x = 1:nxards
+            
             % Apply Collaborative Filtering
-            [processedPatches, transformed_signal_shrunk] = Collaborative_Filtering(similarPatches, sigma_squared);
+            [processedPatches, transformed_signal_shrunk] = Collaborative_Filtering(processedY(y,x,:), sigma_squared);
     
             % After Collaborative Filtering Aggregation is to be done.
             
@@ -250,6 +257,7 @@ end
 function processedY_basic = Second_Denoising_Step(processedY,Y, tau_wien, lambda_hard_sigma,nhard, khards, Nwien,Nhard)
     % Get the size of the processedY channel
     [height, width, ~] = size(processedY);
+
     % Define the hard thresholding operator gamma_prime based on
     % lambda_hard_sigma
     gamma_prime = @(x) (abs(x) >= lambda_hard_sigma) .* x;
@@ -262,18 +270,26 @@ function processedY_basic = Second_Denoising_Step(processedY,Y, tau_wien, lambda
     
     % Get the size of the Y channel
     %[height, width] = size(paddedY);
+    % Calculate the number of blocks of nhard*nhard size in the padded Y channel
+    nyards = floor(height / nhard);
+    nxards = floor(width / nhard);
+
+    offset= (khards)/2;
     
     % Loop over the pixels in the Y channel
-    for y = 1:height-khards+1     
-        for x = 1:width-khards+1
-            % Extract the reference block P
-            blockP = padded_processedY(y:y+khards-1, x:x+khards-1);
+    for y = 1:nyards    
+        for x = 1:nxards
+             % Extract the search window
+            searchWindow = padded_processedY((y - 1) * nhard + 1:(y - 1) * nhard + nhard, (x - 1) * nhard + 1:(x - 1) * nhard + nhard);
             
+             % Extract the reference block P from the center of the search window, with some offset
+            blockP = searchWindow((nhard - 1)/2 + 1 - offset:(nhard - 1)/2 + khards - offset, (nhard - 1)/2 + 1 - offset:(nhard - 1)/2 + khards - offset);
+
             % Calculate the normalized quadratic distance between P and each patch Q in the neighborhood
             distances = zeros(nhard, nhard);
             for dy = 0:nhard-1
                 for dx = 0:nhard-1
-                    blockQ = padded_processedY(y+dy:y+dy+nhard-1, x+dx:x+dx+nhard-1);
+                    blockQ = searchWindow(dy:(dy + khards - 1), dx:(dx + khards - 1));
                     distances(dy+1, dx+1) = sqrt(sum(sum((gamma_prime(blockP) - gamma_prime(blockQ)).^2)) /(khards^2)) ;  
                 end 
             end
@@ -289,10 +305,12 @@ function processedY_basic = Second_Denoising_Step(processedY,Y, tau_wien, lambda
             sortedSimilarPatchesIndices = similarPatchesIndices(sortedIndices);
             
             % Keep the first Nwien patches in P(P) .  
-            NwienIndices = sortedSimilarPatchesIndices(1:Nwien); 
+            NwienIndices = sortedSimilarPatchesIndices(0:(Nwien-1)); 
+
+            similarPatches = searchWindow(NwienIndices, :);
             
             % Store the sorted similar patches indices in the processed Y channel
-            processedY_basic(y, x, :) = NwienIndices;
+            processedY_basic(y, x, :) = similarPatches;
 
         end
     end
@@ -307,18 +325,26 @@ function processedY_basic = Second_Denoising_Step(processedY,Y, tau_wien, lambda
     
     % Get the size of the Y channel
     [height, width] = size(paddedY);
+
+    % Calculate the number of blocks of nhard*nhard size in the padded Y channel
+    nyards = floor(height / nhard);
+    nxards = floor(width / nhard);
+
+    offset= (khards)/2;
     
     % Loop over the pixels in the Y channel
-    for j = 1:height-khards+1     
-        for i = 1:width-khards+1
-            % Extract the reference block P
-            blockP = paddedY(j:j+khards-1, i:i+khards-1);
+    for j = 1:nyards    
+        for i = 1:nxards
+             % Extract the search window
+             searchWindow = paddedY((y - 1) * nhard + 1:(y - 1) * nhard + nhard, (x - 1) * nhard + 1:(x - 1) * nhard + nhard);
+             % Extract the reference block P from the center of the search window, with some offset
+            blockP = searchWindow((nhard - 1)/2 + 1 - offset:(nhard - 1)/2 + khards - offset, (nhard - 1)/2 + 1 - offset:(nhard - 1)/2 + khards - offset);
             
             % Calculate the normalized quadratic distance between P and each patch Q in the neighborhood
             distances = zeros(nhard, nhard);
             for dj = 0:nhard-1
                 for di = 0:nhard-1
-                    blockQ = paddedY(j+dj:j+dj+nhard-1, i+di:i+di+nhard-1);
+                    blockQ =  searchWindow(dj:(dj + khards - 1), di:(di + khards - 1));
                     distances(dj+1, di+1) = sqrt(sum(sum((gamma_prime(blockP) - gamma_prime(blockQ)).^2)) /(khards^2)) ;  
                 end 
             end
@@ -334,28 +360,31 @@ function processedY_basic = Second_Denoising_Step(processedY,Y, tau_wien, lambda
             sortedSimilarPatchesIndices = similarPatchesIndices(sortedIndices);
             
             % Keep the first Nhard patches in P(P) .  
-            Nwien_Indices = sortedSimilarPatchesIndices(1:Nwien); 
+            Nwien_Indices = sortedSimilarPatchesIndices(0:(Nwien-1)); 
+
+              % Extract the '3Dgroup' named set with Nhard number of patches with that indices with 'distanceVector <= tau_hard'
+            similarPatches = searchWindow(Nwien_Indices, :);
             
             % Store the sorted similar patches indices in the processed Y channel
-            processed_Y(j, i, :) = Nwien_Indices;
+            processed_Y(j, i, :) = similarPatches;
          end
     end
       
-    [height, width, ~] = size(processedY_baic);
+    
    
      % Apply Colaaborative_Filtering_2
-    for y = 1:height - khards + 1
-        for x = 1:width - khards + 1
+    for y = 1:nyards
+        for x = 1:nxards
             % Extract the indices of similar patches
-            similarIndices_Pbasic = processedY_basic(y, x, :);
-            similarIndices_P_P = processed_Y(y, x, :);
+            %similarIndices_Pbasic = processedY_basic(y, x, :);
+            %similarIndices_P_P = processed_Y(y, x, :);
     
             % Extract the similar patches
-            similarPatches_Pbasic= padded_processedY(y:y + khards - 1, x:x + khards - 1, similarIndices_Pbasic(P));
-            similarPatches_P_P = paddedY(y:y + khards - 1, x:x + khards - 1, similarIndices_P_P);
+            %similarPatches_Pbasic= padded_processedY(y:y + khards - 1, x:x + khards - 1, similarIndices_Pbasic(P));
+            %similarPatches_P_P = paddedY(y:y + khards - 1, x:x + khards - 1, similarIndices_P_P);
     
             % Apply 3D transform and shrinkage
-            [processedPatches_2,wiener_coeff] = Collaborative_Filtering_2(similarPatches_Pbasic,similarPatches_P_P, sigma);
+            [processedPatches_2,wiener_coeff] = Collaborative_Filtering_2(processedY_basic(y, x, :),processed_Y(y, x, :), sigma);
 
                % After Collaborative Filtering
             
@@ -519,11 +548,9 @@ for idx = 1:num_patches2
             
    % Apply inverse 2D DCT transform
    for idx1 = 1:num_patches2
-        transformed_patch_inv = transformed_patches_inv(:, :, idx1);
-        
+        transformed_patch_inv = transformed_patches_inv(:, :, idx1); 
         % Apply inverse 2D DCT transform
         processed_patch = idct2(transformed_patch_inv);
-        
         processedPatches_2(:, :, idx1) = processed_patch;
    end
 end
@@ -532,14 +559,3 @@ end
    
 
             
-
-
-
-
-
-
-
-
-
-
-
